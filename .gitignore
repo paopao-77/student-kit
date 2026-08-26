@@ -1,0 +1,19 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local datasets, generated outputs, and rendered artifacts
+data/
+数据集/
+results/
+qa_renders/
+render_check_infvae/
+
+# IDE files
+.idea/
+
+# Large local archives and office documents
+*.zip
+*.rar
+*.7z
+*.docx

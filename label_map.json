@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "notes": [
+    "raw maps preserve dataset-specific labels for reproducibility.",
+    "rumor_binary maps non-rumor/nonrumour to 0 and rumor-like classes to 1.",
+    "weibo labels are inherited from the BiGCN preprocessed release; verify whether 0/1 means non-rumor/rumor before final reporting."
+  ],
+  "tasks": {
+    "rumor_binary": {
+      "0": 0,
+      "1": 1,
+      "false": 1,
+      "non-rumor": 0,
+      "nonrumour": 0,
+      "rumor": 1,
+      "rumour": 1,
+      "true": 1,
+      "unclear": -1,
+      "unverified": 1
+    },
+    "veracity": {
+      "false": 0,
+      "non-rumor": 3,
+      "nonrumour": 3,
+      "true": 1,
+      "unclear": -1,
+      "unverified": 2
+    }
+  },
+  "datasets": {
+    "pheme": {
+      "raw_label": {
+        "nonrumour": 0,
+        "rumour": 1,
+        "unclear": -1
+      },
+      "veracity_source": "veracity"
+    },
+    "twitter15": {
+      "raw_label": {
+        "false": 0,
+        "non-rumor": 3,
+        "true": 1,
+        "unverified": 2
+      },
+      "veracity_source": "label"
+    },
+    "twitter16": {
+      "raw_label": {
+        "false": 0,
+        "non-rumor": 3,
+        "true": 1,
+        "unverified": 2
+      },
+      "veracity_source": "label"
+    },
+    "twitter15_rumdetect2017": {
+      "raw_label": {
+        "false": 0,
+        "non-rumor": 3,
+        "true": 1,
+        "unverified": 2
+      },
+      "veracity_source": "label"
+    },
+    "twitter16_rumdetect2017": {
+      "raw_label": {
+        "false": 0,
+        "non-rumor": 3,
+        "true": 1,
+        "unverified": 2
+      },
+      "veracity_source": "label"
+    },
+    "weibo": {
+      "raw_label": {
+        "0": 0,
+        "1": 1
+      },
+      "veracity_source": null
+    }
+  }
+}
