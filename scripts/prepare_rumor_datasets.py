@@ -739,10 +739,20 @@ def tweet_event_row(dataset: str, sample_id: str, tweet: dict, source_time: date
 
 
 def prepare_pheme_dataset(raw_root: Path, output_root: Path, limit: int = 0) -> dict:
-    root = raw_root / "all-rnr-annotated-threads"
-    if not root.exists():
-        raise FileNotFoundError(root)
+    """Auto-detect PHEME layout and dispatch.
 
+    New layout: raw_root/all-rnr-annotated-threads/{event}/{rumours,non-rumours}/{tid}/
+                annotation.json, structure.json, source-tweets/{tid}.json, reactions/*.json
+    Old layout: raw_root/{event}/{rumours,non-rumours}/{tid}/
+                source-tweet/{tid}.json, reactions/*.json  (no annotation/structure.json)
+    """
+    new_root = raw_root / "all-rnr-annotated-threads"
+    if new_root.exists():
+        return _prepare_pheme_new_format(new_root, output_root, limit)
+    return _prepare_pheme_old_format(raw_root, output_root, limit)
+
+
+def _prepare_pheme_new_format(root: Path, output_root: Path, limit: int = 0) -> dict:
     out_dir = output_root / "pheme"
     ensure_dir(out_dir)
 
@@ -931,6 +941,199 @@ def prepare_pheme_dataset(raw_root: Path, output_root: Path, limit: int = 0) -> 
     return stats
 
 
+def _prepare_pheme_old_format(raw_root: Path, output_root: Path, limit: int = 0) -> dict:
+    """Old PHEME layout: {event}/{rumours,non-rumours}/{tid}/source-tweet/{tid}.json + reactions/*.json.
+
+    No annotation.json/structure.json, so the label is taken from the folder name and
+    edges are built as a star (source -> each reaction) since the true reply tree is
+    not stored in this release.
+    """
+    out_dir = output_root / "pheme"
+    ensure_dir(out_dir)
+
+    label_counter = Counter()
+    veracity_counter = Counter()
+    all_users = set()
+    cascade_lengths = []
+    max_delays = []
+    processed = 0
+    edge_total = 0
+    source_text_total = 0
+
+    sample_fields = [
+        "dataset",
+        "sample_id",
+        "event",
+        "source_text",
+        "label",
+        "veracity",
+        "num_nodes",
+        "num_edges",
+        "max_delay_minutes",
+        "has_source_text",
+    ]
+    edge_fields = [
+        "dataset",
+        "sample_id",
+        "parent_user_id",
+        "parent_tweet_id",
+        "parent_delay_minutes",
+        "child_user_id",
+        "child_tweet_id",
+        "child_delay_minutes",
+    ]
+    event_fields = [
+        "dataset",
+        "sample_id",
+        "tweet_id",
+        "user_id",
+        "created_at",
+        "delay_minutes",
+        "is_source",
+        "text",
+        "followers_count",
+        "friends_count",
+        "statuses_count",
+        "verified",
+    ]
+
+    sample_file = (out_dir / "samples.csv").open("w", encoding="utf-8", newline="")
+    edge_file = (out_dir / "edges.csv").open("w", encoding="utf-8", newline="")
+    event_file = (out_dir / "events.csv").open("w", encoding="utf-8", newline="")
+    sample_writer = csv.DictWriter(sample_file, fieldnames=sample_fields)
+    edge_writer = csv.DictWriter(edge_file, fieldnames=edge_fields)
+    event_writer = csv.DictWriter(event_file, fieldnames=event_fields)
+    sample_writer.writeheader()
+    edge_writer.writeheader()
+    event_writer.writeheader()
+
+    try:
+        for event_dir in sorted(p for p in raw_root.iterdir() if p.is_dir() and not p.name.startswith("._")):
+            event_name = event_dir.name
+            for label_dir_name in ["rumours", "non-rumours"]:
+                label_dir = event_dir / label_dir_name
+                if not label_dir.exists():
+                    continue
+                for thread_dir in sorted(p for p in label_dir.iterdir() if p.is_dir() and not p.name.startswith("._")):
+                    if limit and processed >= limit:
+                        break
+                    sample_id = thread_dir.name
+                    source_dir = thread_dir / "source-tweet"
+                    reactions_dir = thread_dir / "reactions"
+                    exact = source_dir / f"{sample_id}.json"
+                    source_candidates = sorted(source_dir.glob("*.json")) if source_dir.exists() else []
+                    source_path = exact if exact.exists() else (source_candidates[0] if source_candidates else None)
+                    if source_path is None:
+                        continue
+                    processed += 1
+                    if processed % 500 == 0:
+                        print(f"processed PHEME (old) threads: {processed}", flush=True)
+
+                    source_tweet = read_json(source_path)
+                    source_time = parse_twitter_datetime(source_tweet.get("created_at", ""))
+                    source_tweet_id = str(source_tweet.get("id_str") or source_tweet.get("id") or "")
+                    label = "rumour" if label_dir_name == "rumours" else "nonrumour"
+                    veracity = "nonrumour" if label == "nonrumour" else "unverified"
+
+                    label_counter[label] += 1
+                    veracity_counter[veracity] += 1
+
+                    event_rows = [tweet_event_row("pheme", sample_id, source_tweet, source_time, "1")]
+                    if reactions_dir.exists():
+                        for reaction_path in sorted(reactions_dir.glob("*.json")):
+                            if reaction_path.name.startswith("._"):
+                                continue
+                            try:
+                                reaction = read_json(reaction_path)
+                            except json.JSONDecodeError:
+                                continue
+                            event_rows.append(tweet_event_row("pheme", sample_id, reaction, source_time, "0"))
+
+                    node_ids = {row["tweet_id"] for row in event_rows if row["tweet_id"]}
+                    for row in event_rows:
+                        if row["user_id"]:
+                            all_users.add(row["user_id"])
+                        event_writer.writerow(row)
+
+                    for row in event_rows:
+                        if row["is_source"] == "1":
+                            continue
+                        edge_writer.writerow(
+                            {
+                                "dataset": "pheme",
+                                "sample_id": sample_id,
+                                "parent_user_id": "",
+                                "parent_tweet_id": source_tweet_id,
+                                "parent_delay_minutes": 0.0,
+                                "child_user_id": "",
+                                "child_tweet_id": row["tweet_id"],
+                                "child_delay_minutes": row["delay_minutes"],
+                            }
+                        )
+
+                    numeric_delays = [
+                        float(row["delay_minutes"])
+                        for row in event_rows
+                        if row["delay_minutes"] != ""
+                    ]
+                    max_delay = max(numeric_delays) if numeric_delays else 0.0
+                    max_delays.append(max_delay)
+                    cascade_lengths.append(len(node_ids))
+                    edge_total += max(len(event_rows) - 1, 0)
+                    has_source_text = "1" if source_tweet.get("text") else "0"
+                    if has_source_text == "1":
+                        source_text_total += 1
+
+                    sample_writer.writerow(
+                        {
+                            "dataset": "pheme",
+                            "sample_id": sample_id,
+                            "event": event_name,
+                            "source_text": source_tweet.get("text", ""),
+                            "label": label,
+                            "veracity": veracity,
+                            "num_nodes": len(node_ids),
+                            "num_edges": max(len(event_rows) - 1, 0),
+                            "max_delay_minutes": round(max_delay, 6),
+                            "has_source_text": has_source_text,
+                        }
+                    )
+    finally:
+        sample_file.close()
+        edge_file.close()
+        event_file.close()
+
+    stats = {
+        "dataset": "pheme",
+        "layout": "old",
+        "num_samples": processed,
+        "num_labels": len(label_counter),
+        "label_distribution": dict(sorted(label_counter.items())),
+        "veracity_distribution": dict(sorted(veracity_counter.items())),
+        "num_users": len(all_users),
+        "num_edges": edge_total,
+        "avg_cascade_nodes": round(sum(cascade_lengths) / len(cascade_lengths), 4)
+        if cascade_lengths
+        else 0,
+        "min_cascade_nodes": min(cascade_lengths) if cascade_lengths else 0,
+        "max_cascade_nodes": max(cascade_lengths) if cascade_lengths else 0,
+        "avg_max_delay_minutes": round(sum(max_delays) / len(max_delays), 4)
+        if max_delays
+        else 0,
+        "samples_missing_tree": 0,
+        "samples_with_source_text": source_text_total,
+        "notes": [
+            "Old PHEME release: label from folder name (rumours/non-rumours); no annotation.json/structure.json.",
+            "Edges built as star (source -> each reaction); true reply-tree structure unavailable in this release.",
+        ],
+    }
+
+    with (out_dir / "stats.json").open("w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+    return stats
+
+
 def write_stats_csv(path: Path, stats_rows: list[dict]) -> None:
     fieldnames = [
         "dataset",
@@ -1010,7 +1213,7 @@ def main() -> None:
         elif (weibo_root / "weibo_id_label.txt").exists() and (weibo_root / "weibotree.txt").exists():
             stats_rows.append(prepare_weibo_dataset(weibo_root, output_root))
     pheme_root = Path(args.pheme_root)
-    if "pheme" in requested and (pheme_root / "all-rnr-annotated-threads").exists():
+    if "pheme" in requested and pheme_root.exists():
         stats_rows.append(prepare_pheme_dataset(pheme_root, output_root, limit=args.limit))
 
     if stats_rows:
